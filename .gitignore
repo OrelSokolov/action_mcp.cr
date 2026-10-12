@@ -3,3 +3,5 @@
 /tmp/
 *.dwarf
 /.crystal/
+/shard.lock
+/shard.override.yml

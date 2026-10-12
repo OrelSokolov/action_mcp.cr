@@ -3,8 +3,11 @@ version: 0.1.0
 crystal: ">= 1.21.0"
 dependencies:
   active_support_cr:
-    path: ../active_support.cr
+    github: OrelSokolov/active_support.cr
+    version: ~> 0.1.0
   action_pack_cr:
-    path: ../action_pack.cr
+    github: OrelSokolov/action_pack.cr
+    version: ~> 0.1.0
   active_agent_cr:
-    path: ../active_agent.cr
+    github: OrelSokolov/active_agent.cr
+    version: ~> 0.1.0
