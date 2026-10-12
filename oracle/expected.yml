@@ -1,0 +1,28 @@
+init_ok	200|application/json|{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":true},"prompts":{"listChanged":true},"resources":{"listChanged":true},"logging":{}},"serverInfo":{"name":"crails_oracle","version":"1.2.3"}}}
+init_latest	200|application/json|{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{"listChanged":true},"prompts":{"listChanged":true},"resources":{"listChanged":true},"logging":{}},"serverInfo":{"name":"crails_oracle","version":"1.2.3"}}}
+init_unknown_version	200|application/json|{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{"listChanged":true},"prompts":{"listChanged":true},"resources":{"listChanged":true},"logging":{}},"serverInfo":{"name":"crails_oracle","version":"1.2.3"}}}
+init_missing_params	200|application/json|{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"Invalid params","data":"Invalid params"}}
+notif_initialized	202||
+notif_cancelled	202||
+ping	200|application/json|{"jsonrpc":"2.0","id":3,"result":{}}
+ping_string_id	200|application/json|{"jsonrpc":"2.0","id":"str-id","result":{}}
+tools_list	200|application/json|{"jsonrpc":"2.0","id":4,"result":{"tools":[{"name":"echo_tool","description":"Echo back a message","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{"message":{"type":"string"},"times":{"type":"integer"}},"required":["message"],"type":"object"}},{"name":"boom_tool","description":"Always fails","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{},"required":[],"type":"object"}}]}}
+call_ok	200|application/json|{"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"hihi"}],"isError":false}}
+call_raise	200|application/json|{"jsonrpc":"2.0","id":6,"error":{"code":-32603,"message":"Internal error","data":"Internal error calling tool boom_tool"}}
+call_unknown_tool	200|application/json|{"jsonrpc":"2.0","id":7,"error":{"code":-32602,"message":"Invalid params","data":"Tool not found: nope"}}
+call_missing_required	200|application/json|{"jsonrpc":"2.0","id":8,"result":{"content":[{"type":"text","text":"Missing required arguments: message"}],"isError":true}}
+call_no_arguments	200|application/json|{"jsonrpc":"2.0","id":14,"result":{"content":[{"type":"text","text":"Missing required arguments: message"}],"isError":true}}
+call_wrong_type_int	200|application/json|{"jsonrpc":"2.0","id":13,"result":{"content":[{"type":"text","text":"Invalid arguments: value at `/times` is not an integer"}],"isError":true}}
+call_wrong_type_string	200|application/json|{"jsonrpc":"2.0","id":16,"result":{"content":[{"type":"text","text":"Invalid arguments: value at `/message` is not a string"}],"isError":true}}
+resources_list	200|application/json|{"jsonrpc":"2.0","id":9,"result":{"resources":[]}}
+resources_read	200|application/json|{"jsonrpc":"2.0","id":11,"result":{"contents":[]}}
+prompts_list	200|application/json|{"jsonrpc":"2.0","id":10,"result":{"prompts":[]}}
+method_not_found	200|application/json|{"jsonrpc":"2.0","id":12,"error":{"code":-32601,"message":"Method not found","data":"bogus/method"}}
+parse_error	400|application/json|{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error: Invalid JSON"}}
+parse_trailing_garbage	400|application/json|{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error: Invalid JSON"}}
+batch_rejected	400|application/json|{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request: JSON-RPC body must be a single request object"}}
+accept_missing	406|application/json|{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Not Acceptable: Accept header must include application/json"}}
+accept_sse_only	406|application/json|{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Not Acceptable: Accept header must include application/json"}}
+content_type_wrong	415|application/json|{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Unsupported Media Type: Content-Type must be application/json"}}
+get_405	405|application/json|{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Method not allowed"}}
+delete_200	200|application/json|{"success":true}

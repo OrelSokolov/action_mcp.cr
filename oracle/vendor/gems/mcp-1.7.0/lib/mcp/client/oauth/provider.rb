@@ -1,0 +1,204 @@
+# frozen_string_literal: true
+
+module MCP
+  class Client
+    module OAuth
+      # Pluggable OAuth client configuration for the OAuth 2.1 Authorization Code + PKCE flow,
+      # handed to `MCP::Client::HTTP` via the `oauth:` keyword.
+      # Inspired by the OAuthClientProvider in the TypeScript SDK and the httpx.Auth-based provider
+      # in the Python SDK. For the non-interactive machine-to-machine `client_credentials` grant,
+      # use `ClientCredentialsProvider` instead.
+      #
+      # Required keyword arguments:
+      # - `client_metadata`  - Hash sent to the authorization server's Dynamic Client
+      #   Registration endpoint. Must include at minimum `redirect_uris`,
+      #   `grant_types`, `response_types`, and `token_endpoint_auth_method`.
+      #   When `application_type` is omitted, the SDK infers `"native"` or `"web"`
+      #   from `redirect_uris` per SEP-837 before registering; an explicit value
+      #   always wins.
+      # - `redirect_uri`     - String: the redirect URI used for the authorization
+      #   request. Must be one of `redirect_uris` in `client_metadata`.
+      # - `redirect_handler` - Callable invoked with the fully-built authorization
+      #   URL (a `URI`). Implementations typically open the user's browser.
+      #
+      # Optional keyword arguments:
+      # - `callback_handler` - Callable invoked after `redirect_handler`. Returns
+      #   `[code, state]` or `[code, state, iss]`, where `code` is the authorization code,
+      #   `state` is the `state` parameter received on the redirect URI, and `iss` is
+      #   the RFC 9207 `iss` parameter (or nil when the authorization response carried none).
+      #   Returning the 3-element form opts into SEP-2468 issuer validation: a present `iss`
+      #   must match the authorization server's issuer, and a nil `iss` is
+      #   rejected when the AS advertises `authorization_response_iss_parameter_supported`.
+      #   The 2-element form skips the check for backward compatibility.
+      #   Omit it when the redirect arrives in a later request, as it does in a web application:
+      #   the flow then stops after `redirect_handler` with a pending authorization saved in `storage`,
+      #   and the request that receives the redirect finishes it with `Flow#finish!`.
+      # - `pending_authorization_max_age` - Seconds a pending authorization stays redeemable, counted from the moment
+      #   `run!` saves it, when `callback_handler` is omitted. Defaults to `DEFAULT_PENDING_AUTHORIZATION_MAX_AGE`.
+      # - `scope`   - String of space-separated scopes to request when the server's
+      #   `WWW-Authenticate` does not specify one.
+      # - `storage` - Object responding to `tokens`, `save_tokens(tokens)`,
+      #   `client_information`, and `save_client_information(info)`. Defaults to
+      #   an `InMemoryStorage`. Persisted `client_information` is stamped with
+      #   an `"issuer"` member binding it to the authorization server that
+      #   issued it (SEP-2352); when the authorization server changes, the SDK discards
+      #   the stale registration and tokens and re-registers.
+      #   Without `callback_handler`, it must also respond to `save_pending_authorization(state, pending)`,
+      #   `pending_authorization(state)`, and `delete_pending_authorization(state)`; the last must remove the entry
+      #   and return it atomically, returning `nil` when there was none, and the storage should expire entries
+      #   older than `pending_authorization_max_age`, as `InMemoryStorage` does.
+      # - `client_id_metadata_document_url` - URL where the client publishes its Client ID Metadata Document
+      #   (`draft-ietf-oauth-client-id-metadata-document-00` and the MCP authorization specification).
+      #   When the authorization server advertises `client_id_metadata_document_supported: true`,
+      #   the SDK uses this URL as the OAuth `client_id` and skips Dynamic Client Registration.
+      #   Spec-required: `https://` scheme, a non-root path, and no fragment, userinfo, or `.`/`..` segments.
+      #   The SDK additionally refuses to send query strings (the draft marks them only SHOULD NOT include,
+      #   but different encodings of the same query would yield different `client_id` strings for the same document).
+      #   The document served at the URL is a separate JSON artifact from the `client_metadata` keyword:
+      #   DCR `client_metadata` MUST NOT include `client_id`, while the CIMD document MUST include `client_id` set
+      #   to the URL, `client_name`, and `redirect_uris` covering `redirect_uri`.
+      # - `token_request_params` - Hash of String keys and values added to every token request this provider makes
+      #   (the authorization code exchange and refresh), for parameters the authorization server requires beyond
+      #   the grant itself. The authorization request is not affected. A key in `Flow::RESERVED_TOKEN_REQUEST_PARAMS`
+      #   raises `Flow::InvalidTokenRequestParamsError`.
+      #   The Hash is copied and frozen. See `StorageBackedProvider#token_request_params`.
+      # - `http_client_customizer` - Callable invoked with the `Faraday::Connection` the flow builds for
+      #   its own requests; see `StorageBackedProvider#http_client_customizer`.
+      class Provider
+        include StorageBackedProvider
+
+        # Raised when `Provider#initialize` is called with a `redirect_uri` that
+        # is neither HTTPS nor a loopback `http://` URL, per the MCP
+        # authorization spec's Communication Security requirement.
+        class InsecureRedirectURIError < ArgumentError; end
+
+        # Raised when the `redirect_uri` argument is not listed in
+        # `client_metadata[:redirect_uris]` / `["redirect_uris"]`. Registering
+        # the URI with the authorization server but then sending a different
+        # one with the authorization request would be rejected by the AS at
+        # runtime; failing at construction surfaces the bug earlier.
+        class UnregisteredRedirectURIError < ArgumentError; end
+
+        # Raised when `client_id_metadata_document_url` is provided but does not meet
+        # the structural requirements for a Client ID Metadata Document URL:
+        # HTTPS, non-root path, and no fragment, query, userinfo, or `.`/`..` segments.
+        # The CIMD URL is sent to the authorization server as the OAuth `client_id`,
+        # so the same Communication Security guarantee that protects the redirect URI
+        # applies and the value must unambiguously identify the document.
+        class InvalidClientIDMetadataDocumentURLError < ArgumentError; end
+
+        # Raised when `Provider#initialize` is called without `callback_handler` and with a `storage`
+        # that cannot hold a pending authorization between the request that sends the user to the authorization server
+        # and the request that receives the redirect.
+        class PendingAuthorizationStorageError < ArgumentError; end
+
+        # Seconds a pending authorization stays redeemable, counted from the moment `run!` saves it, when the provider has
+        # no `callback_handler`; long enough for a user to sign in and consent at the authorization server. It is also
+        # the age past which `InMemoryStorage` drops an authorization that was never finished, at its next save, so that
+        # an abandoned one does not keep its PKCE verifier in memory for the life of the process; a custom storage should
+        # expire entries at the same age.
+        DEFAULT_PENDING_AUTHORIZATION_MAX_AGE = 600
+
+        PENDING_AUTHORIZATION_STORAGE_METHODS = [
+          :save_pending_authorization,
+          :pending_authorization,
+          :delete_pending_authorization,
+        ].freeze
+
+        attr_reader :client_metadata,
+          :redirect_uri,
+          :scope,
+          :storage,
+          :redirect_handler,
+          :callback_handler,
+          :client_id_metadata_document_url,
+          :pending_authorization_max_age
+
+        def initialize(
+          client_metadata:,
+          redirect_uri:,
+          redirect_handler:,
+          callback_handler: nil,
+          scope: nil,
+          storage: nil,
+          client_id_metadata_document_url: nil,
+          authorization_request_validator: nil,
+          token_request_params: nil,
+          http_client_customizer: nil,
+          pending_authorization_max_age: DEFAULT_PENDING_AUTHORIZATION_MAX_AGE
+        )
+          unless Discovery.secure_url?(redirect_uri)
+            raise InsecureRedirectURIError,
+              "redirect_uri #{redirect_uri.inspect} must use https or be a loopback http URL " \
+                "(localhost, 127.0.0.0/8, or ::1) per the MCP authorization Communication Security requirement."
+          end
+
+          registered = Array(client_metadata[:redirect_uris] || client_metadata["redirect_uris"])
+          unless registered.include?(redirect_uri)
+            raise UnregisteredRedirectURIError,
+              "redirect_uri #{redirect_uri.inspect} must be listed in client_metadata[:redirect_uris] " \
+                "(got #{registered.inspect}); otherwise the authorization server will reject the authorization request."
+          end
+
+          if client_id_metadata_document_url && !Discovery.client_id_metadata_document_url?(client_id_metadata_document_url)
+            raise InvalidClientIDMetadataDocumentURLError,
+              "client_id_metadata_document_url #{client_id_metadata_document_url.inspect} must be an https URL " \
+                "with a non-root path and no fragment, query, userinfo, or `.`/`..` segments, " \
+                "per the MCP authorization specification and `draft-ietf-oauth-client-id-metadata-document`."
+          end
+
+          http_client_customizer = validated_http_client_customizer(http_client_customizer)
+
+          unless pending_authorization_max_age.is_a?(Integer) && pending_authorization_max_age.positive?
+            raise ArgumentError, "pending_authorization_max_age must be a positive Integer number of seconds (got #{pending_authorization_max_age.inspect})."
+          end
+
+          # The default storage drops abandoned pending authorizations at the same age the flow stops redeeming them.
+          storage ||= InMemoryStorage.new(pending_authorization_max_age: pending_authorization_max_age)
+
+          if callback_handler.nil?
+            missing = PENDING_AUTHORIZATION_STORAGE_METHODS.reject { |method| storage.respond_to?(method) }
+            unless missing.empty?
+              raise PendingAuthorizationStorageError,
+                "Without a callback_handler the authorization finishes in a later request, so storage must also respond to " \
+                  "#{missing.join(", ")} (#{storage.class} does not)."
+            end
+          end
+
+          @client_metadata = client_metadata
+          @redirect_uri = redirect_uri
+          @redirect_handler = redirect_handler
+          @callback_handler = callback_handler
+          @scope = scope
+          @storage = storage
+          @client_id_metadata_document_url = client_id_metadata_document_url
+          @authorization_request_validator = authorization_request_validator
+          @token_request_params = frozen_token_request_params(token_request_params)
+          @http_client_customizer = http_client_customizer
+          @pending_authorization_max_age = pending_authorization_max_age
+        end
+
+        # Identifies the OAuth flow this provider drives.
+        # `Flow` dispatches on this rather than inspecting `client_metadata[:grant_types]`,
+        # which is protocol metadata for the authorization server, not an SDK control signal.
+        def authorization_flow
+          :authorization_code
+        end
+
+        def save_pending_authorization(state, pending)
+          @storage.save_pending_authorization(state, pending)
+        end
+
+        def pending_authorization(state)
+          @storage.pending_authorization(state)
+        end
+
+        # Returns the entry the storage removed, or `nil`. `Flow#finish!` redeems the code only when it gets
+        # the entry back, so of two callbacks racing on the same `state`, only one can.
+        def delete_pending_authorization(state)
+          @storage.delete_pending_authorization(state)
+        end
+      end
+    end
+  end
+end

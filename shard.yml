@@ -1,0 +1,10 @@
+name: action_mcp_cr
+version: 0.1.0
+crystal: ">= 1.21.0"
+dependencies:
+  active_support_cr:
+    path: ../active_support.cr
+  action_pack_cr:
+    path: ../action_pack.cr
+  active_agent_cr:
+    path: ../active_agent.cr
